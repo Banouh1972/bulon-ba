@@ -1,6 +1,12 @@
 const WebSocket = require('ws');
+const http = require('http');
 
-const wss = new WebSocket.Server({ port: 3001 });
+const port = process.env.PORT || 3001;
+
+// ⚠️ Serveur HTTP nécessaire pour Railway
+const server = http.createServer();
+
+const wss = new WebSocket.Server({ server });
 
 const rooms = new Map();
 
@@ -11,10 +17,10 @@ function send(ws, data) {
 }
 
 wss.on('connection', (ws) => {
+    console.log("Client connecté");
 
     ws.on('message', (message) => {
         const data = JSON.parse(message);
-
         const { type, room } = data;
 
         if (!room) return;
@@ -26,7 +32,6 @@ wss.on('connection', (ws) => {
         const clients = rooms.get(room);
 
         switch (type) {
-
             case 'join-room':
                 if (clients.length >= 2) {
                     send(ws, { type: 'room-full' });
@@ -57,10 +62,13 @@ wss.on('connection', (ws) => {
     });
 
     ws.on('close', () => {
+        console.log("Client déconnecté");
         for (const [room, clients] of rooms.entries()) {
             rooms.set(room, clients.filter(c => c !== ws));
         }
     });
 });
 
-console.log("WebSocket server running on port 3001");
+server.listen(port, () => {
+    console.log(`Server running on port ${port}`);
+});
