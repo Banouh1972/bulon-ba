@@ -3,8 +3,11 @@ const http = require('http');
 
 const port = process.env.PORT || 3001;
 
-// ⚠️ Serveur HTTP nécessaire pour Railway
-const server = http.createServer();
+// ✅ Serveur HTTP avec réponse
+const server = http.createServer((req, res) => {
+    res.writeHead(200);
+    res.end("WebSocket server is running");
+});
 
 const wss = new WebSocket.Server({ server });
 
@@ -69,6 +72,7 @@ wss.on('connection', (ws) => {
     });
 });
 
+// ✅ IMPORTANT
 server.listen(port, () => {
     console.log(`Server running on port ${port}`);
 });
