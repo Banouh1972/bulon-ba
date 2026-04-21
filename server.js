@@ -1,8 +1,12 @@
 const http = require('http');
 const WebSocket = require('ws');
 
-const port = process.env.PORT || 8080;
+const port = process.env.PORT;
 
+if (!port) {
+  console.error("PORT not defined by Railway");
+  process.exit(1);
+}
 const server = http.createServer((req, res) => {
   res.statusCode = 200;
   res.setHeader('Content-Type', 'text/plain');
