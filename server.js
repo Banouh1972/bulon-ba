@@ -10,20 +10,135 @@ const server = http.createServer((req, res) => {
 
 const wss = new WebSocketServer({ noServer: true });
 
+// roomId => [{ ws, userId, userName }]
+const rooms = new Map();
+
+function send(ws, payload) {
+  if (ws.readyState === ws.OPEN) {
+    ws.send(JSON.stringify(payload));
+  }
+}
+
+function getRoom(roomId) {
+  if (!rooms.has(roomId)) {
+    rooms.set(roomId, []);
+  }
+  return rooms.get(roomId);
+}
+
+function removeClient(ws) {
+  for (const [roomId, clients] of rooms.entries()) {
+    const leavingClient = clients.find(client => client.ws === ws);
+    if (!leavingClient) continue;
+
+    const updated = clients.filter(client => client.ws !== ws);
+    rooms.set(roomId, updated);
+
+    updated.forEach(client => {
+      send(client.ws, {
+        type: 'peer-left',
+        userId: leavingClient.userId,
+        userName: leavingClient.userName
+      });
+    });
+
+    if (updated.length === 0) {
+      rooms.delete(roomId);
+    }
+
+    break;
+  }
+}
+
 wss.on('connection', (ws) => {
   console.log('Client connected');
 
   ws.on('message', (message) => {
-    console.log('Message:', message.toString());
-    ws.send(`echo: ${message.toString()}`);
+    try {
+      const data = JSON.parse(message.toString());
+      const { type, room, userId, userName } = data;
+
+      if (!type) return;
+
+      if (type === 'join-room') {
+        if (!room) return;
+
+        const clients = getRoom(room);
+
+        const alreadyInRoom = clients.some(client => client.ws === ws);
+        if (!alreadyInRoom) {
+          clients.push({
+            ws,
+            userId: userId ?? null,
+            userName: userName ?? 'Participant'
+          });
+        }
+
+        send(ws, {
+          type: 'room-info',
+          hasOtherPeer: clients.length > 1
+        });
+
+        clients.forEach(client => {
+          if (client.ws !== ws) {
+            send(client.ws, {
+              type: 'peer-joined',
+              userId: userId ?? null,
+              userName: userName ?? 'Participant'
+            });
+          }
+        });
+
+        return;
+      }
+
+      if (type === 'chat-message') {
+        if (!room) return;
+
+        const clients = getRoom(room);
+
+        clients.forEach(client => {
+          if (client.ws !== ws) {
+            send(client.ws, {
+              type: 'chat-message',
+              room,
+              userId: userId ?? null,
+              userName: userName ?? 'Participant',
+              message: data.message ?? ''
+            });
+          }
+        });
+
+        return;
+      }
+
+      // Réservé pour WebRTC ensuite
+      if (['offer', 'answer', 'ice-candidate'].includes(type)) {
+        if (!room) return;
+
+        const clients = getRoom(room);
+
+        clients.forEach(client => {
+          if (client.ws !== ws) {
+            send(client.ws, data);
+          }
+        });
+
+        return;
+      }
+    } catch (err) {
+      console.error('Invalid message:', err);
+    }
   });
 
   ws.on('close', () => {
+    removeClient(ws);
     console.log('Client disconnected');
   });
 
   ws.on('error', (err) => {
     console.error('WebSocket error:', err);
+    removeClient(ws);
   });
 });
 
