@@ -14,7 +14,7 @@ const wss = new WebSocketServer({ noServer: true });
 const rooms = new Map();
 
 function send(ws, payload) {
-  if (ws.readyState === ws.OPEN) {
+  if (ws.readyState === 1) {
     ws.send(JSON.stringify(payload));
   }
 }
@@ -28,24 +28,23 @@ function getRoom(roomId) {
 
 function removeClient(ws) {
   for (const [roomId, clients] of rooms.entries()) {
-    const leavingClient = clients.find(client => client.ws === ws);
-    if (!leavingClient) continue;
+    const leaving = clients.find(client => client.ws === ws);
+    if (!leaving) continue;
 
-    const updated = clients.filter(client => client.ws !== ws);
-    rooms.set(roomId, updated);
+    const remaining = clients.filter(client => client.ws !== ws);
 
-    updated.forEach(client => {
-      send(client.ws, {
-        type: 'peer-left',
-        userId: leavingClient.userId,
-        userName: leavingClient.userName
-      });
-    });
-
-    if (updated.length === 0) {
+    if (remaining.length === 0) {
       rooms.delete(roomId);
+    } else {
+      rooms.set(roomId, remaining);
+      remaining.forEach(client => {
+        send(client.ws, {
+          type: 'peer-left',
+          userId: leaving.userId,
+          userName: leaving.userName
+        });
+      });
     }
-
     break;
   }
 }
@@ -53,9 +52,9 @@ function removeClient(ws) {
 wss.on('connection', (ws) => {
   console.log('Client connected');
 
-  ws.on('message', (message) => {
+  ws.on('message', (raw) => {
     try {
-      const data = JSON.parse(message.toString());
+      const data = JSON.parse(raw.toString());
       const { type, room, userId, userName } = data;
 
       if (!type) return;
@@ -64,9 +63,9 @@ wss.on('connection', (ws) => {
         if (!room) return;
 
         const clients = getRoom(room);
+        const exists = clients.some(client => client.ws === ws);
 
-        const alreadyInRoom = clients.some(client => client.ws === ws);
-        if (!alreadyInRoom) {
+        if (!exists) {
           clients.push({
             ws,
             userId: userId ?? null,
@@ -96,7 +95,6 @@ wss.on('connection', (ws) => {
         if (!room) return;
 
         const clients = getRoom(room);
-
         clients.forEach(client => {
           if (client.ws !== ws) {
             send(client.ws, {
@@ -112,12 +110,10 @@ wss.on('connection', (ws) => {
         return;
       }
 
-      // Réservé pour WebRTC ensuite
       if (['offer', 'answer', 'ice-candidate'].includes(type)) {
         if (!room) return;
 
         const clients = getRoom(room);
-
         clients.forEach(client => {
           if (client.ws !== ws) {
             send(client.ws, data);
