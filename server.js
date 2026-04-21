@@ -1,29 +1,19 @@
-const WebSocket = require('ws');
 const http = require('http');
+const WebSocket = require('ws');
 
-const port = process.env.PORT || 3001;
+const port = process.env.PORT || 8080;
 
-// ✅ Serveur HTTP OBLIGATOIRE pour Railway
 const server = http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('OK');
+    res.writeHead(200);
+    res.end("OK - Server running");
 });
 
 const wss = new WebSocket.Server({ server });
 
 wss.on('connection', (ws) => {
-    console.log("Client connecté");
-
-    ws.on('message', (message) => {
-        console.log("Message:", message.toString());
-    });
-
-    ws.on('close', () => {
-        console.log("Client déconnecté");
-    });
+    console.log("Client connected");
 });
 
-// ⚠️ très important : 0.0.0.0
-server.listen(port, '0.0.0.0', () => {
+server.listen(port, () => {
     console.log(`Server running on port ${port}`);
 });
