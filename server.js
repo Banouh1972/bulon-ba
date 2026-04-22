@@ -12,7 +12,7 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ noServer: true });
 
 // roomId => {
-//   hostUserId: "1",
+//   hostUserId: "12",   // fixé par la réunion créée en PHP
 //   clients: [{ ws, userId, userName, isHost, handRaised, micEnabled, camEnabled }]
 // }
 const rooms = new Map();
@@ -64,6 +64,15 @@ function findClient(roomId, userId) {
   return room.clients.find(c => String(c.userId) === String(userId)) || null;
 }
 
+function updateHostFlags(roomId) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+
+  room.clients.forEach(client => {
+    client.isHost = String(client.userId) === String(room.hostUserId);
+  });
+}
+
 function removeClientByWs(ws) {
   for (const [roomId, room] of rooms.entries()) {
     const leaving = room.clients.find(client => client.ws === ws);
@@ -72,18 +81,13 @@ function removeClientByWs(ws) {
     room.clients = room.clients.filter(client => client.ws !== ws);
 
     if (room.clients.length === 0) {
+      // On garde la room supprimée de la mémoire; l’hôte reste défini côté DB
       rooms.delete(roomId);
       break;
     }
 
-    if (String(room.hostUserId) === String(leaving.userId)) {
-      room.hostUserId = String(room.clients[0].userId);
-      room.clients[0].isHost = true;
-      broadcast(roomId, {
-        type: 'host-changed',
-        hostUserId: room.hostUserId
-      });
-    }
+    // IMPORTANT: on ne transfère PAS l’hôte à quelqu’un d’autre
+    updateHostFlags(roomId);
 
     broadcast(roomId, {
       type: 'peer-left',
@@ -93,7 +97,8 @@ function removeClientByWs(ws) {
 
     broadcast(roomId, {
       type: 'participants-update',
-      participants: getParticipants(roomId)
+      participants: getParticipants(roomId),
+      hostUserId: room.hostUserId
     });
 
     break;
@@ -115,6 +120,12 @@ wss.on('connection', (ws) => {
 
         const roomState = getRoomState(room);
         const currentUserId = String(userId ?? '');
+        const incomingHostUserId = String(data.hostUserId ?? '');
+
+        // On fixe l’hôte UNE FOIS depuis la réunion PHP
+        if (!roomState.hostUserId && incomingHostUserId) {
+          roomState.hostUserId = incomingHostUserId;
+        }
 
         let client = roomState.clients.find(c => String(c.userId) === currentUserId);
 
@@ -127,16 +138,11 @@ wss.on('connection', (ws) => {
             return;
           }
 
-          const isHost = roomState.clients.length === 0;
-          if (isHost) {
-            roomState.hostUserId = currentUserId;
-          }
-
           client = {
             ws,
             userId: currentUserId,
             userName: userName ?? 'Participant',
-            isHost,
+            isHost: false,
             handRaised: false,
             micEnabled: true,
             camEnabled: true
@@ -147,6 +153,8 @@ wss.on('connection', (ws) => {
           client.ws = ws;
           client.userName = userName ?? client.userName;
         }
+
+        updateHostFlags(room);
 
         send(ws, {
           type: 'room-info',
@@ -163,7 +171,8 @@ wss.on('connection', (ws) => {
 
         broadcast(room, {
           type: 'participants-update',
-          participants: getParticipants(room)
+          participants: getParticipants(room),
+          hostUserId: roomState.hostUserId
         });
 
         return;
@@ -210,7 +219,8 @@ wss.on('connection', (ws) => {
 
         broadcast(room, {
           type: 'participants-update',
-          participants: getParticipants(room)
+          participants: getParticipants(room),
+          hostUserId: rooms.get(room)?.hostUserId || null
         });
 
         return;
@@ -251,9 +261,12 @@ wss.on('connection', (ws) => {
           roomState.clients = roomState.clients.filter(c => String(c.userId) !== String(targetUserId));
         }
 
+        updateHostFlags(room);
+
         broadcast(room, {
           type: 'participants-update',
-          participants: getParticipants(room)
+          participants: getParticipants(room),
+          hostUserId: roomState.hostUserId
         });
 
         return;
