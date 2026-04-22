@@ -2,6 +2,7 @@ const http = require('http');
 const { WebSocketServer } = require('ws');
 
 const port = Number(process.env.PORT || 8080);
+const MAX_PARTICIPANTS = 4;
 
 const server = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -88,6 +89,14 @@ wss.on('connection', (ws) => {
         const exists = clients.some(client => client.ws === ws);
 
         if (!exists) {
+          if (clients.length >= MAX_PARTICIPANTS) {
+            send(ws, {
+              type: 'room-full',
+              maxParticipants: MAX_PARTICIPANTS
+            });
+            return;
+          }
+
           clients.push({
             ws,
             userId: userId ?? null,
@@ -97,7 +106,8 @@ wss.on('connection', (ws) => {
 
         send(ws, {
           type: 'room-info',
-          participants: getParticipants(room)
+          participants: getParticipants(room),
+          maxParticipants: MAX_PARTICIPANTS
         });
 
         broadcast(room, {
@@ -148,7 +158,6 @@ wss.on('connection', (ws) => {
 
         const clients = getRoom(room);
         const target = clients.find(client => String(client.userId) === String(targetUserId));
-
         if (!target) return;
 
         send(target.ws, {
