@@ -11,7 +11,10 @@ const server = http.createServer((req, res) => {
 
 const wss = new WebSocketServer({ noServer: true });
 
-// roomId => [{ ws, userId, userName }]
+// roomId => {
+//   hostUserId: "1",
+//   clients: [{ ws, userId, userName, isHost, handRaised, micEnabled, camEnabled }]
+// }
 const rooms = new Map();
 
 function send(ws, payload) {
@@ -20,53 +23,78 @@ function send(ws, payload) {
   }
 }
 
-function getRoom(roomId) {
+function getRoomState(roomId) {
   if (!rooms.has(roomId)) {
-    rooms.set(roomId, []);
+    rooms.set(roomId, {
+      hostUserId: null,
+      clients: []
+    });
   }
   return rooms.get(roomId);
 }
 
 function getParticipants(roomId) {
-  const clients = rooms.get(roomId) || [];
+  const room = rooms.get(roomId);
+  const clients = room?.clients || [];
+
   return clients.map(client => ({
     userId: String(client.userId ?? ''),
-    userName: client.userName ?? 'Participant'
+    userName: client.userName ?? 'Participant',
+    isHost: !!client.isHost,
+    handRaised: !!client.handRaised,
+    micEnabled: client.micEnabled !== false,
+    camEnabled: client.camEnabled !== false
   }));
 }
 
 function broadcast(roomId, payload, exceptWs = null) {
-  const clients = rooms.get(roomId) || [];
-  clients.forEach(client => {
+  const room = rooms.get(roomId);
+  if (!room) return;
+
+  room.clients.forEach(client => {
     if (client.ws !== exceptWs) {
       send(client.ws, payload);
     }
   });
 }
 
-function removeClient(ws) {
-  for (const [roomId, clients] of rooms.entries()) {
-    const leaving = clients.find(client => client.ws === ws);
+function findClient(roomId, userId) {
+  const room = rooms.get(roomId);
+  if (!room) return null;
+  return room.clients.find(c => String(c.userId) === String(userId)) || null;
+}
+
+function removeClientByWs(ws) {
+  for (const [roomId, room] of rooms.entries()) {
+    const leaving = room.clients.find(client => client.ws === ws);
     if (!leaving) continue;
 
-    const remaining = clients.filter(client => client.ws !== ws);
+    room.clients = room.clients.filter(client => client.ws !== ws);
 
-    if (remaining.length === 0) {
+    if (room.clients.length === 0) {
       rooms.delete(roomId);
-    } else {
-      rooms.set(roomId, remaining);
+      break;
+    }
 
+    if (String(room.hostUserId) === String(leaving.userId)) {
+      room.hostUserId = String(room.clients[0].userId);
+      room.clients[0].isHost = true;
       broadcast(roomId, {
-        type: 'peer-left',
-        userId: String(leaving.userId ?? ''),
-        userName: leaving.userName ?? 'Participant'
-      });
-
-      broadcast(roomId, {
-        type: 'participants-update',
-        participants: getParticipants(roomId)
+        type: 'host-changed',
+        hostUserId: room.hostUserId
       });
     }
+
+    broadcast(roomId, {
+      type: 'peer-left',
+      userId: String(leaving.userId ?? ''),
+      userName: leaving.userName ?? 'Participant'
+    });
+
+    broadcast(roomId, {
+      type: 'participants-update',
+      participants: getParticipants(roomId)
+    });
 
     break;
   }
@@ -85,16 +113,13 @@ wss.on('connection', (ws) => {
       if (type === 'join-room') {
         if (!room) return;
 
-        const clients = getRoom(room);
+        const roomState = getRoomState(room);
         const currentUserId = String(userId ?? '');
 
-        const existingIndex = clients.findIndex(client => String(client.userId) === currentUserId);
+        let client = roomState.clients.find(c => String(c.userId) === currentUserId);
 
-        if (existingIndex !== -1) {
-          clients[existingIndex].ws = ws;
-          clients[existingIndex].userName = userName ?? 'Participant';
-        } else {
-          if (clients.length >= MAX_PARTICIPANTS) {
+        if (!client) {
+          if (roomState.clients.length >= MAX_PARTICIPANTS) {
             send(ws, {
               type: 'room-full',
               maxParticipants: MAX_PARTICIPANTS
@@ -102,17 +127,32 @@ wss.on('connection', (ws) => {
             return;
           }
 
-          clients.push({
+          const isHost = roomState.clients.length === 0;
+          if (isHost) {
+            roomState.hostUserId = currentUserId;
+          }
+
+          client = {
             ws,
             userId: currentUserId,
-            userName: userName ?? 'Participant'
-          });
+            userName: userName ?? 'Participant',
+            isHost,
+            handRaised: false,
+            micEnabled: true,
+            camEnabled: true
+          };
+
+          roomState.clients.push(client);
+        } else {
+          client.ws = ws;
+          client.userName = userName ?? client.userName;
         }
 
         send(ws, {
           type: 'room-info',
           participants: getParticipants(room),
-          maxParticipants: MAX_PARTICIPANTS
+          maxParticipants: MAX_PARTICIPANTS,
+          hostUserId: roomState.hostUserId
         });
 
         broadcast(room, {
@@ -158,11 +198,74 @@ wss.on('connection', (ws) => {
         return;
       }
 
+      if (type === 'participant-state') {
+        if (!room) return;
+
+        const client = findClient(room, userId);
+        if (!client) return;
+
+        if (typeof data.handRaised === 'boolean') client.handRaised = data.handRaised;
+        if (typeof data.micEnabled === 'boolean') client.micEnabled = data.micEnabled;
+        if (typeof data.camEnabled === 'boolean') client.camEnabled = data.camEnabled;
+
+        broadcast(room, {
+          type: 'participants-update',
+          participants: getParticipants(room)
+        });
+
+        return;
+      }
+
+      if (type === 'moderator-action') {
+        if (!room || !targetUserId) return;
+
+        const roomState = rooms.get(room);
+        if (!roomState) return;
+
+        const sender = findClient(room, userId);
+        if (!sender || !sender.isHost) return;
+
+        const target = findClient(room, targetUserId);
+        if (!target) return;
+
+        const action = data.action;
+
+        if (action === 'mute-mic') {
+          target.micEnabled = false;
+          send(target.ws, { type: 'moderator-action', action: 'mute-mic' });
+        }
+
+        if (action === 'disable-cam') {
+          target.camEnabled = false;
+          send(target.ws, { type: 'moderator-action', action: 'disable-cam' });
+        }
+
+        if (action === 'lower-hand') {
+          target.handRaised = false;
+          send(target.ws, { type: 'moderator-action', action: 'lower-hand' });
+        }
+
+        if (action === 'remove-user') {
+          send(target.ws, { type: 'moderator-action', action: 'remove-user' });
+          try { target.ws.close(); } catch (e) {}
+          roomState.clients = roomState.clients.filter(c => String(c.userId) !== String(targetUserId));
+        }
+
+        broadcast(room, {
+          type: 'participants-update',
+          participants: getParticipants(room)
+        });
+
+        return;
+      }
+
       if (['offer', 'answer', 'ice-candidate'].includes(type)) {
         if (!room || !targetUserId) return;
 
-        const clients = getRoom(room);
-        const target = clients.find(client => String(client.userId) === String(targetUserId));
+        const roomState = rooms.get(room);
+        if (!roomState) return;
+
+        const target = roomState.clients.find(client => String(client.userId) === String(targetUserId));
         if (!target) return;
 
         send(target.ws, {
@@ -179,13 +282,13 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
-    removeClient(ws);
+    removeClientByWs(ws);
     console.log('Client disconnected');
   });
 
   ws.on('error', (err) => {
     console.error('WebSocket error:', err);
-    removeClient(ws);
+    removeClientByWs(ws);
   });
 });
 
