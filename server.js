@@ -15,7 +15,7 @@ const wss = new WebSocketServer({ noServer: true });
 const rooms = new Map();
 
 function send(ws, payload) {
-  if (ws.readyState === 1) {
+  if (ws && ws.readyState === 1) {
     ws.send(JSON.stringify(payload));
   }
 }
@@ -30,7 +30,7 @@ function getRoom(roomId) {
 function getParticipants(roomId) {
   const clients = rooms.get(roomId) || [];
   return clients.map(client => ({
-    userId: client.userId ?? null,
+    userId: String(client.userId ?? ''),
     userName: client.userName ?? 'Participant'
   }));
 }
@@ -58,8 +58,8 @@ function removeClient(ws) {
 
       broadcast(roomId, {
         type: 'peer-left',
-        userId: leaving.userId,
-        userName: leaving.userName
+        userId: String(leaving.userId ?? ''),
+        userName: leaving.userName ?? 'Participant'
       });
 
       broadcast(roomId, {
@@ -86,9 +86,14 @@ wss.on('connection', (ws) => {
         if (!room) return;
 
         const clients = getRoom(room);
-        const exists = clients.some(client => client.ws === ws);
+        const currentUserId = String(userId ?? '');
 
-        if (!exists) {
+        const existingIndex = clients.findIndex(client => String(client.userId) === currentUserId);
+
+        if (existingIndex !== -1) {
+          clients[existingIndex].ws = ws;
+          clients[existingIndex].userName = userName ?? 'Participant';
+        } else {
           if (clients.length >= MAX_PARTICIPANTS) {
             send(ws, {
               type: 'room-full',
@@ -99,7 +104,7 @@ wss.on('connection', (ws) => {
 
           clients.push({
             ws,
-            userId: userId ?? null,
+            userId: currentUserId,
             userName: userName ?? 'Participant'
           });
         }
@@ -112,7 +117,7 @@ wss.on('connection', (ws) => {
 
         broadcast(room, {
           type: 'peer-joined',
-          userId: userId ?? null,
+          userId: currentUserId,
           userName: userName ?? 'Participant'
         }, ws);
 
@@ -130,7 +135,7 @@ wss.on('connection', (ws) => {
         broadcast(room, {
           type: 'chat-message',
           room,
-          userId: userId ?? null,
+          userId: String(userId ?? ''),
           userName: userName ?? 'Participant',
           message: data.message ?? '',
           time: data.time ?? null
@@ -145,7 +150,7 @@ wss.on('connection', (ws) => {
         broadcast(room, {
           type: 'reaction',
           room,
-          userId: userId ?? null,
+          userId: String(userId ?? ''),
           userName: userName ?? 'Participant',
           reaction: data.reaction ?? ''
         }, ws);
@@ -162,7 +167,7 @@ wss.on('connection', (ws) => {
 
         send(target.ws, {
           ...data,
-          fromUserId: userId ?? null,
+          fromUserId: String(userId ?? ''),
           fromUserName: userName ?? 'Participant'
         });
 
