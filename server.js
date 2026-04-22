@@ -26,6 +26,23 @@ function getRoom(roomId) {
   return rooms.get(roomId);
 }
 
+function getParticipants(roomId) {
+  const clients = rooms.get(roomId) || [];
+  return clients.map(client => ({
+    userId: client.userId ?? null,
+    userName: client.userName ?? 'Participant'
+  }));
+}
+
+function broadcast(roomId, payload, exceptWs = null) {
+  const clients = rooms.get(roomId) || [];
+  clients.forEach(client => {
+    if (client.ws !== exceptWs) {
+      send(client.ws, payload);
+    }
+  });
+}
+
 function removeClient(ws) {
   for (const [roomId, clients] of rooms.entries()) {
     const leaving = clients.find(client => client.ws === ws);
@@ -37,14 +54,19 @@ function removeClient(ws) {
       rooms.delete(roomId);
     } else {
       rooms.set(roomId, remaining);
-      remaining.forEach(client => {
-        send(client.ws, {
-          type: 'peer-left',
-          userId: leaving.userId,
-          userName: leaving.userName
-        });
+
+      broadcast(roomId, {
+        type: 'peer-left',
+        userId: leaving.userId,
+        userName: leaving.userName
+      });
+
+      broadcast(roomId, {
+        type: 'participants-update',
+        participants: getParticipants(roomId)
       });
     }
+
     break;
   }
 }
@@ -75,17 +97,19 @@ wss.on('connection', (ws) => {
 
         send(ws, {
           type: 'room-info',
-          hasOtherPeer: clients.length > 1
+          hasOtherPeer: clients.length > 1,
+          participants: getParticipants(room)
         });
 
-        clients.forEach(client => {
-          if (client.ws !== ws) {
-            send(client.ws, {
-              type: 'peer-joined',
-              userId: userId ?? null,
-              userName: userName ?? 'Participant'
-            });
-          }
+        broadcast(room, {
+          type: 'peer-joined',
+          userId: userId ?? null,
+          userName: userName ?? 'Participant'
+        }, ws);
+
+        broadcast(room, {
+          type: 'participants-update',
+          participants: getParticipants(room)
         });
 
         return;
@@ -94,18 +118,28 @@ wss.on('connection', (ws) => {
       if (type === 'chat-message') {
         if (!room) return;
 
-        const clients = getRoom(room);
-        clients.forEach(client => {
-          if (client.ws !== ws) {
-            send(client.ws, {
-              type: 'chat-message',
-              room,
-              userId: userId ?? null,
-              userName: userName ?? 'Participant',
-              message: data.message ?? ''
-            });
-          }
-        });
+        broadcast(room, {
+          type: 'chat-message',
+          room,
+          userId: userId ?? null,
+          userName: userName ?? 'Participant',
+          message: data.message ?? '',
+          time: data.time ?? null
+        }, ws);
+
+        return;
+      }
+
+      if (type === 'reaction') {
+        if (!room) return;
+
+        broadcast(room, {
+          type: 'reaction',
+          room,
+          userId: userId ?? null,
+          userName: userName ?? 'Participant',
+          reaction: data.reaction ?? ''
+        }, ws);
 
         return;
       }
@@ -113,13 +147,7 @@ wss.on('connection', (ws) => {
       if (['offer', 'answer', 'ice-candidate'].includes(type)) {
         if (!room) return;
 
-        const clients = getRoom(room);
-        clients.forEach(client => {
-          if (client.ws !== ws) {
-            send(client.ws, data);
-          }
-        });
-
+        broadcast(room, data, ws);
         return;
       }
     } catch (err) {
