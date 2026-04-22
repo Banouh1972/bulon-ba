@@ -77,7 +77,7 @@ wss.on('connection', (ws) => {
   ws.on('message', (raw) => {
     try {
       const data = JSON.parse(raw.toString());
-      const { type, room, userId, userName } = data;
+      const { type, room, userId, userName, targetUserId } = data;
 
       if (!type) return;
 
@@ -97,7 +97,6 @@ wss.on('connection', (ws) => {
 
         send(ws, {
           type: 'room-info',
-          hasOtherPeer: clients.length > 1,
           participants: getParticipants(room)
         });
 
@@ -145,9 +144,19 @@ wss.on('connection', (ws) => {
       }
 
       if (['offer', 'answer', 'ice-candidate'].includes(type)) {
-        if (!room) return;
+        if (!room || !targetUserId) return;
 
-        broadcast(room, data, ws);
+        const clients = getRoom(room);
+        const target = clients.find(client => String(client.userId) === String(targetUserId));
+
+        if (!target) return;
+
+        send(target.ws, {
+          ...data,
+          fromUserId: userId ?? null,
+          fromUserName: userName ?? 'Participant'
+        });
+
         return;
       }
     } catch (err) {
